@@ -1,0 +1,477 @@
+---
+title: "wild or hatched fish"
+author: "Nestor Pereira"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    toc_depth: 5
+    code_folding: show
+    #df_print: paged
+    #df_print: kable
+    #toc_float: true
+      #collapsed: false
+      #smooth_scroll: TRUE
+    theme: cosmo #spacelab #yeti #united #cosmo
+    highlight: tango
+  pdf_document:
+    df_print: kable
+fontsize: 12pt
+geometry: margin=0.25in
+always_allow_html: yes
+---
+
+<style>
+/* HTML FORMATTING */
+h1, .h1, h2, .h2, h3, .h3, h4, .h4, h5, .h5 {
+  margin-top: 25px; /* space before each header */
+  font-weight: bold; /* bold headers */
+}
+</style>
+
+```{R, echo=FALSE}
+# I set some GLOBAL R chunk options here.
+#   (to hide this message add "echo=FALSE" to the code chunk options)
+
+knitr::opts_chunk$set(comment = NA, message = FALSE, warning = FALSE, width = 100)
+knitr::opts_chunk$set(fig.align = "center", fig.height = 4, fig.width = 6)
+
+knitr::opts_chunk$set(cache = TRUE, autodep=TRUE)   #$
+```
+
+
+# San Juan River Razorback Suckers
+
+Peer mentor (Spring 2016) _Adam Barkalow_'s wife uses stable isotope ratios to analyze fish.
+
+<!---
+Original image sources
+https://upload.wikimedia.org/wikipedia/commons/4/45/Sanjuanrivermap.jpg
+http://chrisbrownphotography.com/wp-content/gallery/utah/san-juan-river/San-Juan-River-Utah.jpg
+http://www.biologicaldiversity.org/species/fish/razorback_sucker/images/RazorbackSucker_MarkFuller_USFWS.jpg
+http://frenchhillpond.org/Images/Fauna/Fish/Parts%20of%20a%20Boney%20Fish.jpg
+
+<img src="http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_SanJuanRiverBasin.jpg" width="300">
+<img src="http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_SanJuanRiverPhoto.jpg" width="300">
+<img src="http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_RazorbackSucker.jpg" width="300">
+<img src="http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_SpineyRays.jpg" width="300">
+--->
+
+__Images:__
+[San Juan River Basin](http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_SanJuanRiverBasin.jpg),
+[San Juan River Photo](http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_SanJuanRiverPhoto.jpg),
+[Razorback Sucker](http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_RazorbackSucker.jpg), and
+[Spiney Rays](http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_SpineyRays.jpg)
+
+__Razorback Suckers__ were collected in 2014 on the San Juan River.
+Elemental [isotopic ratios](https://en.wikipedia.org/wiki/Isotope_analysis)
+from finrays were analyzed for Ba (Barium 56), Ca (Calcium 20), Mg (Magnesium 12), and Sr (Strontium 38).
+Finrays are non-lethally obtained and are used to detect natal origin since the
+material in the reys are partially developed early in life.
+
+__The issue__ is that hatchery fish can get into the river and lose their tags.
+It is important for environmental resource managers to know whether untagged fish are wild or hatchery fish.
+There are five fish sources in the dataset.
+
+```
+4 known sources, 1 mix of unknown sources
+
+Hatchery
+  DEX = Dexter National Fish Hatchery
+  GJH = Ouray  National Fish Hatchery, Grand Valley Unit
+
+Wild
+  NAP = NAPI ponds
+  SJR = San Juan River
+
+Unknown
+  UNK = untagged Razorback Suckers captured in the San Juan River
+        these could be from any of the above sources
+```
+
+__Our goal__ is to use the observations with linear or quadradic discriminant analysis
+  to evaluate classification accuracy of the four known sources
+  using the jackknife (leave-one-out crossvalidation)
+  and then to predict the many observations with unknown sources.
+
+
+## Clean and transform data
+
+Looking at the scatterplot matrix below, clean and/or transform the data if you think it will be helpful.
+Note that measurement error can be an issue in complicated biological measurements.
+Furthermore, a transformation might help separate observations that are tightly grouped in space.
+
+__Please download__ the data into your working directory to save downloads from
+my website each time you knit this document.
+
+```{R}
+library(tidyverse)
+
+# load ada functions
+source("ada_functions.R")
+
+dat_sjrs_full <-
+  read_csv(
+    "ADA2_WS_23_Clustering_SanJuanRazorbackSuckers_data2014.csv"
+  )
+
+dim(dat_sjrs_full)
+# the last set of observations only have a few isotopes, so exclude
+dat_sjrs <-
+  dat_sjrs_full %>%
+  na.omit()
+
+dim(dat_sjrs)
+# no missing values
+dat_sjrs %>%
+  is.na() %>%
+  sum()
+#str(dat_sjrs)
+
+dat_sjrs <-
+  dat_sjrs %>%
+  mutate(
+    Source = factor(Source)
+    # transforming the Ba values separates the tight clustering on the boundary
+  , Ba137 = log10(Ba137)
+  , Ba138 = log10(Ba138)
+  ) %>%
+  select(
+    Source, Ba137:Sr88
+  )
+names(dat_sjrs)
+
+
+## NOTE HERE
+# UNK unknown group to predict
+dat_sjrs_unk <-
+  dat_sjrs %>%
+  filter(
+    Source == "UNK"
+  )
+# Known groups
+dat_sjrs <-
+  dat_sjrs %>%
+  filter(
+    Source != "UNK"
+  ) %>%
+  filter(
+    # There are a few unual observations, remove those assuming measurement errors
+    # remove two small Ca43 values
+    Ca43 > 0.5
+  ) %>%
+  mutate(
+    Source = factor(Source)  # to remove unused levels
+  )
+
+# data sizes
+dat_sjrs_unk %>% dim()
+dat_sjrs     %>% dim()
+```
+
+
+## Known fish scatterplot
+
+Note that this plot can take a while to generate.
+You're welcome to subset the data further for this plot if some of the variables are redundant (highly correlated).
+You could probably get away with 5 columns of data without any loss of interpretation.
+If you want to do this, replace the `dat_sjrs` in the `ggpairs()` function with
+  `dat_sjrs %>% select(col1, col2, ...)` and specify the columns to plot.
+
+```{R, fig.height = 8, fig.width = 8, cache = TRUE}
+# Scatterplot matrix
+library(ggplot2)
+library(GGally)
+p <-
+  ggpairs(
+    dat_sjrs
+  , mapping = ggplot2::aes(colour = Source, alpha = 0.5)
+  , upper = list(continuous = "density", combo = "box")
+  , lower = list(continuous = "points", combo = "dot")
+  #, lower = list(continuous = "cor")
+  , title = "Original data by source"
+  )
+print(p)
+```
+
+
+
+# Classification
+
+__Goal:__ Develop a classification model using discriminant analysis that will
+  reliably classify new observations from the known populations.
+Then, apply the classification model to the `UNK` population in hopes of
+  providing insight into the untagged razorbacks.
+
+## __(2 p)__ LDA or QDA assumptions
+
+Below are some plots that will be helpful.
+
+```{R, fig.height = 8, fig.width = 8, echo=FALSE}
+# # Test multivariate normality using the Shapiro-Wilk test for multivariate normality
+library(mvnormtest)
+# # The data needs to be transposed t() so each variable is a row
+# #   with observations as columns.
+# dat_sjrs %>% filter(Source == "DEX") %>% select(Ba137:Sr88) %>% t() %>% mshapiro.test()
+# dat_sjrs %>% filter(Source == "GJH") %>% select(Ba137:Sr88) %>% t() %>% mshapiro.test()
+# dat_sjrs %>% filter(Source == "NAP") %>% select(Ba137:Sr88) %>% t() %>% mshapiro.test()
+# dat_sjrs %>% filter(Source == "SJR") %>% select(Ba137:Sr88) %>% t() %>% mshapiro.test()
+
+op <- par(no.readonly = TRUE) # the whole list of settable par's.
+par(mfrow = c(2,2)) # order is c(bottom, left, top, right)
+f_mnv_norm_qqplot(dat_sjrs %>% filter(Source == "DEX") %>% select(Ba137:Sr88), "DEX")
+f_mnv_norm_qqplot(dat_sjrs %>% filter(Source == "GJH") %>% select(Ba137:Sr88), "GJH")
+f_mnv_norm_qqplot(dat_sjrs %>% filter(Source == "NAP") %>% select(Ba137:Sr88), "NAP")
+f_mnv_norm_qqplot(dat_sjrs %>% filter(Source == "SJR") %>% select(Ba137:Sr88), "SJR")
+par(op) # reset plotting options
+```
+
+
+Correlation matrices (with graphical representation).
+```{R, fig.height = 8, fig.width = 8, echo=FALSE}
+# Covariance matrices by Source
+library(corrplot)
+library(Hmisc)
+sjrs_cor_mat <- by(dat_sjrs %>% select(Ba137:Sr88), dat_sjrs$Source, cor)
+
+colors <- c("#A50F15", "#DE2D26", "#FB6A4A", "#FCAE91", "#FEE5D9", "white"
+          , "#EFF3FF", "#BDD7E7", "#6BAED6", "#3182BD", "#08519C")
+
+op <- par(no.readonly = TRUE) # the whole list of settable par's.
+# make wider left margin to fit contrast labels
+par(mfrow = c(2,2), mar = 0*rep(1, 4)) # order is c(bottom, left, top, right)
+corrplot(sjrs_cor_mat$DEX, col=colors[5*sjrs_cor_mat$DEX + 6], main="DEX correlation")
+corrplot(sjrs_cor_mat$GJH, col=colors[5*sjrs_cor_mat$GJH + 6], main="GJH correlation")
+corrplot(sjrs_cor_mat$NAP, col=colors[5*sjrs_cor_mat$NAP + 6], main="NAP correlation")
+corrplot(sjrs_cor_mat$SJR, col=colors[5*sjrs_cor_mat$SJR + 6], main="SJR correlation")
+par(op) # reset plotting options
+```
+
+* __State__ the assumptions of both the LDA and QDA discriminant methods.
+* __Interpret__ the plots above to evaluate whether the assumptions are met.
+
+### Solution
+
+For LDA method, we assume normality in the data and same covariance matrices. While for QDA, wee assume normality in the data but don't assume same covariance matrixes. With that said, looking at the plots aboves, we can see that covariance matrixes are different between groups, therefore the most appropiate method to use would be QDA. Looking at the QQ plots, first and last sources' data don't follow normality, but since is a small percentage of the data, we are just going to assume normality for this 2 sources.
+
+## __(3 p)__ Stepwise selection for classification
+
+If multivariate normality is violated, state so, then continue anyway.
+
+Above, if the assumptions of the LDA are met, then use LDA; otherwise use QDA.
+
+Below I provide the code for both backward selection (starting with full model) and
+  forward selection (starting with empty model).
+
+You'll need to __specify LDA or QDA__ throughout the code
+  (note that find/replace of "lda" to "qda", or vice-a-verse is the quickest and safest way to do this).
+
+```{R, fig.height = 6, fig.width = 8}
+dat_sjrs_d <- dat_sjrs %>% select(Ba137:Sr88) # the data
+dat_sjrs_c <- dat_sjrs %>% pull(Source)       # the classes
+
+# start random number generator in same place for everyone
+# and so that random partitions are the same each time code is run
+set.seed(7)
+
+#library(klaR)  # don't run this since it does library(MASS) and breaks select() from dplyr
+# Backward
+step_sjrs_b <-
+  klaR::stepclass(
+    dat_sjrs_d
+  , dat_sjrs_c
+  , method = "qda"  # or "qda"
+  , improvement = 0.001 # stop criterion: improvement less than
+  , direction = "backward"
+  , start.vars = colnames(dat_sjrs_d)
+  )
+## NOTE HERE
+step_sjrs_b$formula
+# estimated correct/error rates
+step_sjrs_b$result.pm
+
+
+# Forward
+step_sjrs_f <-
+  klaR::stepclass(
+    dat_sjrs_d
+  , dat_sjrs_c
+  , method = "qda"  # or "qda"
+  , improvement = 0.001 # stop criterion: improvement less than
+  , direction = "forward"
+  , start.vars = ""
+  )
+## NOTE HERE
+step_sjrs_f$formula
+# estimated correct/error rates
+step_sjrs_f$result.pm
+
+
+op <- par(no.readonly = TRUE) # the whole list of settable par's.
+  # make wider left margin to fit contrast labels
+  par(mfrow = c(1,2), mar = 0*rep(1, 4)) # order is c(bottom, left, top, right)
+  plot(step_sjrs_f, ylim = c(0, 1), main = "empty model, forward")
+  plot(step_sjrs_b, ylim = c(0, 1), main = "full model, backward")
+par(op) # reset plotting options
+
+
+## NOTE HERE
+# set the formula you're using here, then it will be used throughout the rest
+sjrs_formula <- step_sjrs_b
+
+# Select and print the final model
+#library(MASS)  # don't run library(MASS) because it breaks select() from dplyr
+qda_sjrs_final <-
+  MASS::qda(
+    grouping = dat_sjrs_c
+  , x = dat_sjrs_d %>% select(sjrs_formula$model$name)
+  )
+
+
+```
+
+__Discuss__ the differences between the backward and forward selection results.
+
+__Specify the final model__ you'll use for classification.
+
+__Indicate__ the expected classification accuracy of the selected final model.
+
+### Solution
+
+Looking at error rate, backward selection has a slightly smaller error, reason why we decided to use the backward selection model. For each selection different components were selected, ending up in very similar error rates.
+
+
+```{R}
+
+sjrs_formula$result.pm
+
+```
+
+The accuracy of the final model is the same as the accuarcy of the backward model
+
+
+## __(2 p)__ Classification accuracy
+
+Let's look more closely at classification accuracy by evaluating the
+  confusion matrix for classification,
+  the table of how many observations from each population were classified into which populations.
+Numbers along the diagonal are correctly classified, and off-diagonals are errors.
+
+(Make sure you use the correct `lda()` or `qda()` function as selected above.)
+
+```{R}
+# CV = TRUE does jackknife (leave-one-out) crossvalidation
+#library(MASS)  # don't run library(MASS) because it breaks select() from dplyr
+qda_sjrs_cv <-
+  MASS::qda(
+    grouping = dat_sjrs_c
+  , x = dat_sjrs_d %>% select(sjrs_formula$model$name)
+  , CV = TRUE
+  )
+#lda_sjrs_cv
+
+# Create a table of classification and posterior probabilities for each observation
+classify_sjrs <-
+  data.frame(
+    Source = dat_sjrs$Source
+  , class = qda_sjrs_cv$class
+  , error = ""
+  , round(qda_sjrs_cv$posterior, 3)
+  )
+colnames(classify_sjrs) <-
+  c(
+    "Source"
+  , "class"
+  , "error"
+  , paste("post", colnames(qda_sjrs_cv$posterior), sep="_")
+  )
+
+# error column
+classify_sjrs$error <-
+  as.character(classify_sjrs$error)
+classify_agree <-
+  as.character(as.numeric(dat_sjrs$Source) - as.numeric(qda_sjrs_cv$class))
+classify_sjrs$error[!(classify_agree == 0)] <-
+  classify_agree[!(classify_agree == 0)]
+# print table
+#classify_sjrs
+
+# A list of classification statistics
+library(caret)
+confusionMatrix(
+    data      = qda_sjrs_cv$class # predictions
+  , reference = dat_sjrs$Source   # true labels
+  , mode      = "sens_spec"       # restrict output to relevant summaries
+)
+```
+
+__Determine__ whether some populations are better classified than others,
+  or whether each population seems to have roughly the same error rate.
+
+### Solution
+
+DEX and GJH are excellently classified with an accuracy of 99% and 100%. NAP population and SJR population are sometimes mixed, with a lower accuracy of 72% and 85%.
+
+## __(3 p)__ Classify UNK observations
+
+Now we'll use the final model selected above to predict observations from the `UNK` population.
+These are untagged Razorback Suckers captured in the San Juan River which could be from any of the other sources.
+
+```{R}
+# new observations to classify
+summary(dat_sjrs_unk$Source)
+
+# predict the UNK data from the training data LDFs
+pred_sjrs <-
+  predict(
+    qda_sjrs_final
+  , newdata = dat_sjrs_unk %>% select(sjrs_formula$model$name)
+  )
+
+# Create a table of classification and posterior probabilities for each observation
+classify_dat_sjrs_unk <-
+  data.frame(
+    Source = dat_sjrs_unk$Source
+  , class = pred_sjrs$class
+  #, error = ""
+  , round(pred_sjrs$posterior,3)
+  )
+colnames(classify_dat_sjrs_unk) <-
+  c(
+    "Source"
+  , "class"
+  #, "error"
+  , paste("post", colnames(pred_sjrs$posterior), sep="_")
+  )
+
+# update unknown UNK with the class prediction
+dat_sjrs_unk$Class <- pred_sjrs$class
+
+dat_sjrs_unk_pred <- cbind(dat_sjrs_unk, pred_sjrs, classify_dat_sjrs_unk)
+```
+
+```{R, fig.height = 3, fig.width = 8}
+dat_sjrs$Class <- dat_sjrs$Source
+dat_sjrs_all <- rbind(dat_sjrs, dat_sjrs_unk)
+
+# plot data by Source with clusters indicated
+library(ggplot2)
+p1 <- ggplot(dat_sjrs_all, aes(x = Ba138, y = Sr87, colour = Class))
+p1 <- p1 + geom_point()#size = 2)
+p1 <- p1 + labs(title = "Known and unknown observations by source classification")
+p1 <- p1 + facet_wrap( ~ Source, nrow=1)
+print(p1)
+```
+
+
+__Discuss__ the main features of the `UNK` population.
+
+__Explain__ why you think the classification accuracy is expected to be high or low
+  in this case (we don't actually know the accuracy because we don't have the true
+  labels for the `UNK` observations).
+
+
+### Solution
+
+We already checked our final model classification accuracy for all of the population with know data and obtained a very high accuracy between 100% and 72% for different populations. In the case that our unknown data was similar to our training data, then classification should be accurate. This is not the case. We have some new observations with high values of Sr87 and Ba138 that we haven't seen before therefore didnt use to train our model. Our model is not fitted for observations with values of Sr87 higher than 0.25 neither for values of Ba138 higher than -0.75. We can see on the unknown graph, many observations out of that range therefore misclassified. GJH, NAP and some SJR classification look correct.
