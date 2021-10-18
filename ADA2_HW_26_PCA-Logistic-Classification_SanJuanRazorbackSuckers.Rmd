@@ -1,0 +1,745 @@
+---
+title: "Distinguishing between wild fish"
+author: "Nestor Pereira"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    toc_depth: 5
+    code_folding: show
+    #df_print: paged
+    #df_print: kable
+    #toc_float: true
+      #collapsed: false
+      #smooth_scroll: TRUE
+    theme: cosmo #spacelab #yeti #united #cosmo
+    highlight: tango
+  pdf_document:
+    df_print: kable
+fontsize: 12pt
+geometry: margin=0.25in
+always_allow_html: yes
+---
+
+<style>
+/* HTML FORMATTING */
+h1, .h1, h2, .h2, h3, .h3, h4, .h4, h5, .h5 {
+  margin-top: 25px; /* space before each header */
+  font-weight: bold; /* bold headers */
+}
+</style>
+
+```{R, echo=FALSE}
+# I set some GLOBAL R chunk options here.
+#   (to hide this message add "echo=FALSE" to the code chunk options)
+
+knitr::opts_chunk$set(comment = NA, message = FALSE, warning = FALSE, width = 100)
+knitr::opts_chunk$set(fig.align = "center", fig.height = 4, fig.width = 6)
+```
+
+
+
+__Assignment comments:__ _Read this first._
+
+* This assignment looks longer than it is.
+  * Most of the assignment includes tasks that you have done in previous assignments.
+  * I've written most of the challenging code for you.  When I've asked you to write code, I've given you an example to follow.
+  * Later code chunks depend on computations I'd like you to do, so those have been commented out by moving the `{R}` inside the first line of the code chunk. Simply move the `{R}` back after the first triple-tick to let those compute.
+* Overview
+  * Goal: Develop a logistic regression model to predict the source of fish based on PCA components of the elemental isotopes and compare that with a QDA model.
+  * I clean and transform the data for you.
+  * I break the data into a "training" and "test" set so that we can develop (train) models and then see how they perform (test).
+  * We do PCA for each element (Ba, Ca, Mg, and Sr) by combining the isotopes into a single principal component, each explaining more than 99% of the variability of the set of isotopes.
+    * I do one, you have to do the other three.  Copy/paste, then rename the variables.
+  * Logistic regression on the training data
+    * I do an example main-effects model that doesn't fit well.
+    * Put in two-way interactions and quadratic terms and it will fit well, even after backward selection.
+    * The classification metrics on the training set are pretty good (Sensitivity and Specificity).
+  * Classification on the test data
+    * I do the hard part of transforming the test data into the same PCA space as the training data.  (This is handy code if you find you ever need to do this.)
+    * I have all the code to do the classification using both Logistic regression and QDA.  You only need to interpret the results of the classification.
+  * Finally, consider how well the models worked and what could be done to improve them.
+    * You don't need to do additional improvements, just brainstorm a little.
+
+
+# San Juan River Razorback Suckers
+
+Peer mentor (Spring 2016) _Adam Barkalow_'s wife uses stable isotope ratios to analyze fish.
+
+<!---
+Original image sources
+https://upload.wikimedia.org/wikipedia/commons/4/45/Sanjuanrivermap.jpg
+http://chrisbrownphotography.com/wp-content/gallery/utah/san-juan-river/San-Juan-River-Utah.jpg
+http://www.biologicaldiversity.org/species/fish/razorback_sucker/images/RazorbackSucker_MarkFuller_USFWS.jpg
+http://frenchhillpond.org/Images/Fauna/Fish/Parts%20of%20a%20Boney%20Fish.jpg
+
+<img src="http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_SanJuanRiverBasin.jpg" width="300">
+<img src="http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_SanJuanRiverPhoto.jpg" width="300">
+<img src="http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_RazorbackSucker.jpg" width="300">
+<img src="http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_SpineyRays.jpg" width="300">
+--->
+
+__Images:__
+[San Juan River Basin](http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_SanJuanRiverBasin.jpg),
+[San Juan River Photo](http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_SanJuanRiverPhoto.jpg),
+[Razorback Sucker](http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_RazorbackSucker.jpg), and
+[Spiney Rays](http://statacumen.com/teach/ADA2/worksheet/ADA2_WS_23_Clustering_Image_SpineyRays.jpg)
+
+__Razorback Suckers__ were collected in 2014 on the San Juan River.
+Elemental [isotopic ratios](https://en.wikipedia.org/wiki/Isotope_analysis)
+from finrays were analyzed for Ba (Barium 56), Ca (Calcium 20), Mg (Magnesium 12), and Sr (Strontium 38).
+Finrays are non-lethally obtained and are used to detect natal origin since the
+material in the reys are partially developed early in life.
+
+__One issue__ is that hatchery fish can get into the river and lose their tags.
+It is important for environmental resource managers to know whether untagged fish are wild or hatchery fish.
+However, this is actually quite easy to determine with the isotope data that we have;
+  I'd like you to solve a harder problem.
+
+__Another issue__ is distinguishing between the two Wild fish, `NAP` from Ponds and `SJR` from the River.
+
+There are five fish sources in the dataset.
+
+```
+4 known sources, 1 mix of unknown sources
+
+Hatchery
+  DEX = Dexter National Fish Hatchery
+  GJH = Ouray  National Fish Hatchery, Grand Valley Unit
+
+Wild
+  NAP = NAPI ponds
+  SJR = San Juan River
+
+Unknown
+  UNK = untagged Razorback Suckers captured in the San Juan River
+        these could be from any of the above sources
+```
+
+__Our goal__ is to classify the Wild fish into their location sources of Pond or River.
+First, we will use PCA to reduce the sets of highly correlated isotopes of the same element to a single PC feature for each element.
+Then, using the binary response of "Pond" versus "River", and we'll fit a logistic regression and do model selection.
+Finally, we'll assess the expected classification accuracy using logistic regression for classification,
+  and predict some observations I excluded from the model building.
+
+
+
+## Clean and transform data
+
+Looking at the scatterplot matrix below, clean and/or transform the data if you think it will be helpful.
+Note that measurement error can be an issue in complicated biological measurements.
+Furthermore, a transformation might help separate observations that are tightly grouped in space.
+
+__Please download__ the data into your working directory to save downloads from
+my website each time you knit this document.
+
+```{R}
+library(tidyverse)
+
+# load ada functions
+source("ada_functions.R")
+
+dat_sjrs <-
+  read_csv(
+    "ADA2_WS_23_Clustering_SanJuanRazorbackSuckers_data2014.csv"
+  ) %>%
+  # the last set of observations only have a few isotopes, so exclude
+  na.omit() %>%
+  # select the columns to use for analysis
+  select(
+    Source, Ba137:Sr88
+  ) %>%
+  # include only the Wild groups
+  filter(
+    Source %in% c("NAP", "SJR")
+    ## There are a few unual observations, remove those assuming measurement errors
+    # remove two small Ca43 values
+  , Ca43 > 0.5
+  ) %>%
+  mutate(
+    # change to character so we can easily change the labels
+    Source = Source %>% as.character()
+    # Simplify Source to be "Pond" and "River"
+  , Source =
+      case_when(
+        Source == "NAP" ~ "Pond"
+      , Source == "SJR" ~ "River"
+      )
+    # refactor with new labels
+  , Source = factor(Source)
+    # transforming the Ba values separates the tight clustering on the boundary
+  , Ba137 = log10(Ba137)
+  , Ba138 = log10(Ba138)
+  )
+names(dat_sjrs)
+dat_sjrs %>% dim()
+
+
+## NOTE HERE
+## Subset for classification later
+# start random number generator in same place for everyone
+# and so that random partitions are the same each time code is run
+set.seed(3)
+# sample a subset of observation indices to predict
+ind_pred <-
+  sample.int(
+    nrow(dat_sjrs)
+  , size = 100
+  ) %>%
+  sort()
+ind_pred
+
+# prediction subset
+dat_sjrs_pred <-
+  dat_sjrs %>%
+  slice(
+    ind_pred
+  )
+# remove observations to predict from data to develop the model
+dat_sjrs <-
+  dat_sjrs %>%
+  slice(
+    -ind_pred
+  )
+
+# data sizes
+dat_sjrs      %>% dim()
+dat_sjrs_pred %>% dim()
+```
+
+
+## Known fish scatterplot
+
+Note that this plot can take a while to generate.
+You're welcome to subset the data further for this plot if some of the variables are redundant (highly correlated).
+You could probably get away with 5 columns of data without any loss of interpretation.
+If you want to do this, replace the `dat_sjrs` in the `ggpairs()` function with
+  `dat_sjrs %>% select(col1, col2, ...)` and specify the columns to plot.
+
+```{R, fig.height = 8, fig.width = 8}
+# Scatterplot matrix
+library(ggplot2)
+library(GGally)
+p <-
+  ggpairs(
+    dat_sjrs
+  , mapping = ggplot2::aes(colour = Source, alpha = 0.5)
+  , upper = list(continuous = "density", combo = "box")
+  , lower = list(continuous = "points", combo = "dot")
+  #, lower = list(continuous = "cor")
+  , title = "Original data by source"
+  )
+print(p)
+```
+
+
+
+
+# Principal Components Analysis (PCA)
+
+__In this section__, we'll reduce the number of variables in the dataset by
+using PCA to generate new features which are linear combinations of selected variables.
+In this way, we can greatly reduce the dimension of the problem while retaining most of
+the information in the data.
+
+
+## __(2 p)__ PCA of selected sets of variables
+
+I expect that you'll have four features at the end of this part.
+
+I'll do the first one as an example and you can do the rest.
+
+__Ba variables__:
+
+```{R}
+pca_Ba <-
+  princomp(
+    ~ Ba137 + Ba138
+  , data = dat_sjrs
+  , cor  = FALSE
+  )
+pca_Ba %>% summary()
+pca_Ba %>% loadings() %>% print(cutoff = 0)
+
+# If the loadings for Comp.1 are negative,
+#   then switch the signs of the scores (observations on the PCA scale)
+#   so that positive still indicates larger values.
+# For Ba, we need to use a negative sign in front of the scores to do this.
+dat_sjrs <-
+  dat_sjrs %>%
+  mutate(
+    PC1_Ba = -pca_Ba$scores[, "Comp.1"] %>% as.numeric()
+  )
+```
+
+Note that `Comp.1` explains
+  `r signif(100*summary(pca_Ba)$sdev[1]^2/sum(summary(pca_Ba)$sdev^2), 5)`%
+  of the variability of both the Ba variables.
+
+
+__Calculate__ the remaining features to use with PCA below, and
+__report__ the proportion of variance explained by the first component, `Comp.1`.
+
+### Solution
+
+Comp 1 explains 99.8% of the variance, caused by the high correlation betweent Ba isotopes shown in the scatter plot matrix.
+
+__Ca variables__:
+
+```{R}
+pca_Ca <-
+  princomp(
+    ~ Ca43
+  , data = dat_sjrs
+  , cor  = FALSE
+  )
+pca_Ca %>% summary()
+pca_Ca %>% loadings() %>% print(cutoff = 0)
+
+dat_sjrs <-
+  dat_sjrs %>%
+  mutate(
+    PC1_Ca = -pca_Ca$scores[, "Comp.1"] %>% as.numeric()
+  )
+```
+
+In this case, we only have one variable, therefore comp 1 explains 100% of the variance.
+  
+__Mg variables__:
+
+```{R}
+pca_Mg <-
+  princomp(
+    ~ Mg24 + Mg25 + Mg26
+  , data = dat_sjrs
+  , cor  = FALSE
+  )
+pca_Mg %>% summary()
+pca_Mg %>% loadings() %>% print(cutoff = 0)
+
+dat_sjrs <-
+  dat_sjrs %>%
+  mutate(
+    PC1_Mg = -pca_Mg$scores[, "Comp.1"] %>% as.numeric()
+  )
+```
+
+Comp 1 explains 99.83% of the variance.
+
+__Sr variables__:
+
+```{R}
+pca_Sr <-
+  princomp(
+    ~ Sr86 + Sr87 + Sr88, data = dat_sjrs
+  , cor  = FALSE
+  )
+pca_Sr %>% summary()
+pca_Sr %>% loadings() %>% print(cutoff = 0)
+
+dat_sjrs <-
+  dat_sjrs %>%
+  mutate(
+    PC1_Sr = -pca_Sr$scores[, "Comp.1"] %>% as.numeric()
+  )
+```
+
+Comp 1 explains 99.89% of the variance.
+
+## __(1 p)__ Plot a scatterplot matrix of the new PCA variables
+
+This plot should have five variables with a title indicating what is being plotted.
+
+__Hint:__ Use the `dat_sjrs %>% select(Source, PC1_Ba, ...)` command in the first argument of the `ggpairs()` function.
+
+### Solution
+
+```{R, fig.height = 8, fig.width = 8}
+# Scatterplot matrix
+library(ggplot2)
+library(GGally)
+
+p <-
+  ggpairs(
+    dat_sjrs %>% select(Source, PC1_Ba, PC1_Ca, PC1_Mg, PC1_Sr)
+  , mapping = ggplot2::aes(colour = Source, alpha = 0.5)
+  , upper = list(continuous = "density", combo = "box")
+  , lower = list(continuous = "points", combo = "dot")
+  #, lower = list(continuous = "cor")
+  , title = "Original data by source"
+  )
+
+print(p)
+```
+
+
+# Logistic Regression
+
+__In this section__, we'll use logistic regression to develop a model using the PCA
+features to calculate the probability that a given fish is from the Pond (versus River).
+
+
+## __(2 p)__ Fit a logistic regression model
+
+We will model the probability that a fish came from a pond.
+First we need a variable indicating whether it is from a pond or not.
+```{R}
+# response variable indicating "Success"
+dat_sjrs <-
+  dat_sjrs %>%
+  mutate(
+    Pond = (Source == "Pond")
+  )
+```
+
+__Fit the logistic regression model__ below.
+If it does not fit, consider a __more complex model__ (interactions and quadratic terms)
+  until you find that the model fits.
+Perform __backward selection__ and make sure reduced model also fits.
+
+```{R}
+glm_pond <-
+  glm(
+    cbind(Pond, 1 - Pond) ~ (PC1_Ba + PC1_Ca + PC1_Mg + PC1_Sr)^2+I(PC1_Ba^2)+I(PC1_Ca^2)+I(PC1_Mg^2)+I(PC1_Sr^2)
+  , family = binomial
+  , data = dat_sjrs
+  )
+summary(glm_pond)
+# Test residual deviance for lack-of-fit (if > 0.10, little-to-no lack-of-fit)
+dev_p_val <- 1 - pchisq(glm_pond$deviance, glm_pond$df.residual)
+dev_p_val
+
+
+# option: trace = 0 doesn't show each step of the automated selection
+glm_pond_red_AIC <-
+  step(
+    glm_pond
+  , direction = "both"
+  , trace = 0
+  )
+
+# the anova object provides a summary of the selection steps in order
+glm_pond_red_AIC$anova
+summary(glm_pond_red_AIC)
+# Test residual deviance for lack-of-fit (if > 0.10, little-to-no lack-of-fit)
+dev_p_val <- 1 - pchisq(glm_pond_red_AIC$deviance, glm_pond_red_AIC$df.residual)
+dev_p_val
+```
+
+Note that the model doesn't fit well since the lack-of-fit p-value < 0.10.
+Adding higher-order terms, such as two-way interactions and squared terms, may help.
+
+### Solution
+
+After changing the model variables, we obtain a good fit of the data with a high p-value to fail to reject the null hypothesis (model fits well the data)
+
+## __(2 p)__ Assess prediction ability, choose classification threshold
+
+In logistic regression,
+  we have a prediction probability of success.
+We can find a threshold of that prediction probability (e.g., $\hat{p}=0.3$)
+  as a boundary to classify two groups.
+Below, we summarize all possible threshold with an [ROC curve](https://en.wikipedia.org/wiki/Receiver_operating_characteristic).
+We also extract the optimal threshold (giving the jointly best Sensitivity and Specificity).
+
+```{R, fig.height = 6, fig.width = 6}
+
+library(ROCR)
+roc_pred <-
+  prediction(
+    predictions = glm_pond$fitted.values
+  , labels = dat_sjrs$Pond
+  )
+roc_perf <-
+  performance(
+    roc_pred
+  , measure = "tpr"
+  , x.measure = "fpr"
+  )
+
+# determine the best threshold as having the highest overall classification rate
+# Find t that minimizes error
+roc_curve <-
+  data.frame(
+    Spec   = 1 - unlist(roc_perf@x.values)
+  , Sens   =     unlist(roc_perf@y.values)
+  , thresh =     unlist(roc_perf@alpha.values)
+  )
+roc_curve$distance <-
+  sqrt((1 - roc_curve$Sens)^2 + (1 - roc_curve$Spec)^2)
+opt_t <-
+  roc_curve %>%
+  slice(
+    distance %>% which.min()
+  )
+opt_t
+
+# color the ROC curve by threshold
+plot(
+  roc_perf
+  , colorize.palette = rev(rainbow(256, start=0, end=4/6))
+  , colorize = TRUE
+  , main = "Logistic regression for Pond"
+  )
+abline(0, 1, col = "gray80") # reference line
+# optimal threshold
+abline(v = 1 - opt_t$Spec, col = "gray80")
+abline(h = opt_t$Sens, col = "gray80")
+```
+
+Use these values for the Sensitivity and Specificity for the interpretation below.
+```{R}
+# classifications in the training set
+dat_sjrs <-
+  dat_sjrs %>%
+  mutate(
+    class =
+      ifelse(
+        (predict(glm_pond_red_AIC, type = "response") %>% as.numeric() >= opt_t$thresh)
+      , "Pond"
+      , "River"
+      ) %>% factor()
+  )
+
+# A list of classification statistics
+library(caret)
+conf_mat_logistic_train <-
+  confusionMatrix(
+    data      = dat_sjrs$class    # predictions
+  , reference = dat_sjrs$Source   # true labels
+  , mode      = "sens_spec"       # restrict output to relevant summaries
+  )
+conf_mat_logistic_train
+```
+
+__Interpret__ the optimal Sensitivity and Specificity values by reading the
+  linked article on the [ROC curve](https://en.wikipedia.org/wiki/Receiver_operating_characteristic)
+  or [Sensitivity and Specificity](https://en.wikipedia.org/wiki/Sensitivity_and_specificity).
+
+### Solution
+
+A perfect classifier would have values of 1 for specificity and sensitivity. This means that it never misses a positive or a negative observation.
+We would be at the top left of the ROC plot.
+
+Our model has a 71% accuracy and the following sensitivity and specificity :
+
+```{R}
+
+# opt_t[0:2]
+conf_mat_logistic_train$byClass[0:2]
+
+```
+
+
+
+
+# Classification
+
+__In this section__, we'll will compare the predictions using the
+  logistic regression model to the discriminant analysis from last class.
+We'll predict the observations that were held out
+  (after first projecting them into the PCA feature space).
+Then we'll create the confusion matrix
+  (table of which observations were classified from which populations into which other populations)
+  then compare the error rates between the two methods.
+
+
+## Projecting the "test" set of observations into the PCA space
+
+In order to project the "test" subset of the data into the PCA space,
+  we need to perform the same centering and PCA rotation (the loadings) as was done on the "training" subset of data.
+All this information is in the PCA objects calculated above.
+Below, we first subtract the centering values (the means of the training data)
+  then use matrix multiplication with the loadings to calculate the linear combinations of the isotope data for the rotation.
+As before, we choose the same $+$ or $-$ sign as above for each isotopic element.
+Now the "test" subset is mapped onto the same PC1 axis as the "training" subset.
+
+```{R}
+## The equation first subtracts the mean of the variables (in $center),
+##   then calculates the linear combination for PC1 via matrix multiplication (%*%).
+
+# A function to perform the transformation
+f_pca_pred <-
+  function(
+    dat
+  , var_list
+  , pca_obj
+  ) {
+  ## TESTING ## dat = dat_sjrs_pred; var_list = c("Ba137", "Ba138"); pca_obj = pca_Ba
+  out <-
+    (as.matrix(dat %>% select(var_list)) -
+    matrix(rep(pca_obj$center, nrow(dat)), byrow = TRUE, nrow = nrow(dat), ncol = length(pca_obj$center))) %*%
+    as.matrix(pca_obj$loadings[,1], ncol = 1) %>%
+    as.numeric()
+  return(out)
+}
+
+# Do the transformation for each element
+dat_sjrs_pred$PC1_Ba <- -f_pca_pred(dat_sjrs_pred, c("Ba137", "Ba138")      , pca_Ba)
+dat_sjrs_pred$PC1_Ca <-  f_pca_pred(dat_sjrs_pred, c("Ca43")                , pca_Ca)
+dat_sjrs_pred$PC1_Mg <-  f_pca_pred(dat_sjrs_pred, c("Mg24", "Mg25", "Mg26"), pca_Mg)
+dat_sjrs_pred$PC1_Sr <- -f_pca_pred(dat_sjrs_pred, c("Sr86", "Sr87", "Sr88"), pca_Sr)
+```
+
+The test data should look similar to the training data because it was randomly sampled from the whole.
+
+```{R, fig.height = 8, fig.width = 8}
+# Scatterplot matrix
+library(ggplot2)
+library(GGally)
+p <-
+  ggpairs(
+    dat_sjrs_pred %>% select(Source, PC1_Ba, PC1_Ca, PC1_Mg, PC1_Sr)
+  , mapping = ggplot2::aes(colour = Source, alpha = 0.5)
+  , upper = list(continuous = "density", combo = "box")
+  , lower = list(continuous = "points", combo = "dot")
+  #, lower = list(continuous = "cor")
+  , title = "PCA features by source, Test Prediction data"
+  )
+print(p)
+```
+
+
+## __(2 p)__ Logistic regression vs QDA classification
+
+__Logistic regression classification__ using the optimal threshold from the ROC curve.
+
+```{R}
+# classifications in the training set
+dat_sjrs_pred <-
+  dat_sjrs_pred %>%
+  mutate(
+    class =
+      ifelse(
+        (predict(glm_pond_red_AIC, newdata = dat_sjrs_pred, type = "response") %>% as.numeric() >= opt_t$thresh)
+      , "Pond"
+      , "River"
+      ) %>% factor()
+  )
+
+
+# A list of classification statistics
+library(caret)
+conf_mat_logistic_test <-
+  confusionMatrix(
+      data      = dat_sjrs_pred$class    # predictions
+    , reference = dat_sjrs_pred$Source   # true labels
+    , mode      = "sens_spec"            # restrict output to relevant summaries
+  )
+conf_mat_logistic_test
+```
+
+__Quadratic discriminant analysis__ classification using the pca features.
+
+```{R}
+#library(MASS)
+qda_sjrs <-
+  MASS::qda(
+    Source ~ PC1_Ba + PC1_Ca + PC1_Mg + PC1_Sr
+  , data = dat_sjrs
+  )
+#qda_sjrs
+# CV = TRUE does jackknife (leave-one-out) crossvalidation
+#qda_sjrs.cv <- qda(Source ~ PC1_Ba + PC1_Ca + PC1_Mg + PC1_Sr
+#                 , data = dat_sjrs, CV = TRUE)
+
+# predict the test data from the training data LDFs
+qda_sjrs_pred <-
+  predict(
+    qda_sjrs
+  , newdata = dat_sjrs_pred
+  )
+qda_sjrs_pred_class <-
+  data.frame(
+    Source = dat_sjrs_pred$Source
+  , class = qda_sjrs_pred$class
+  #, error = ""
+  , round(qda_sjrs_pred$posterior,3)
+  )
+colnames(qda_sjrs_pred_class) <-
+  c(
+    "Source"
+  , "class"
+  #, "error"
+  , paste("post", colnames(qda_sjrs_pred$posterior), sep="")
+  )
+
+# A list of classification statistics
+library(caret)
+conf_mat_qda_test <-
+  confusionMatrix(
+      data      = qda_sjrs_pred_class$class    # predictions
+    , reference = qda_sjrs_pred_class$Source   # true labels
+    , mode      = "sens_spec"            # restrict output to relevant summaries
+  )
+conf_mat_qda_test
+```
+
+__Summarize__ the error rates and note and differences you observe between the logistic regression and QDA methods.
+
+__Decide__ which method is preferred.
+
+_If you'd like_, change the `set.seed()` value to draw a different random sample and see
+  how the results change from sample to sample,
+  but please return the seed to the original value before turning in your solutions.
+
+### Solution
+
+Our logistic regression model has lower accuracy, sensitivity and specificity values.
+
+```{R}
+
+conf_mat_logistic_test$overall[1]
+conf_mat_logistic_test$byClass[1:2]
+
+```
+
+While QDA model has slightly higher accuracy. It has a lower sensitivity and a higher specificity. This means that it focuses more on correctly classifying negative observations and doesn't care much about positive ones. 
+
+
+```{R}
+
+conf_mat_qda_test$overall[1]
+conf_mat_qda_test$byClass[1:2]
+
+```
+
+Levels of specificity and sensitivity may vary depending on the use of the classifier. 
+For example, the logistic regression model would be a better classifier for a coronavirus detection model, since it focuses on classifying COVID positive patients without caring much about missclasifying negative non sick patients, since we don't want to send home someone with the virus.
+
+
+## __(1 p)__ Accuracy assessment
+
+__Comment__ on whether you are surprised by the prediction accuracy on the "test" subset.
+Did the classifier work much better, worse, or roughly what you expected?
+
+Do you have any ideas for how classification could be improved between these two difficult-to-distinguish sources?
+
+### Solution
+
+The accuracy of both models it's very low... Since by calling all the prediction positive we should get a 50% accuracy if the sampling process is done correctly.
+
+```{R, fig.height = 8, fig.width = 8}
+# Scatterplot matrix
+library(ggplot2)
+library(GGally)
+p <-
+  ggpairs(
+    dat_sjrs_pred %>% select(Source,PC1_Ba, PC1_Ca, PC1_Mg, PC1_Sr)
+  , mapping = ggplot2::aes(colour = Source, alpha = 0.5)
+  , lower = list(continuous = "points", combo = "dot")
+  #, lower = list(continuous = "cor")
+  , title = "PCA features by source, Test Prediction data"
+  )
+print(p)
+
+
+```
+
+Looking at the data from the 2 different sources, it looks very hard to classify it into 2 groups. 
+
+When data is overlapped as such in a 2D dimension, a good solution would be to transform data into a higher dimension Hilbert space with a kernel function allowing our classifier separate the observations better with a hyperplane. Then we can unmapp the data and visualize the classification on the 2D dimension.
+
+A simpler but more tedious solution would be to call Adam Barkalow's wife and ask her to measure more isotopes ratios from the 2 wild sources used in this classification, allowing us to obtain different principal components, and possibly increase the classification accuracy of our models.
+
